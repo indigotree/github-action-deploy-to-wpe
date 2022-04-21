@@ -121,8 +121,10 @@ jobs:
 
 ### Legal
 
-Copyright (C) 2021-present, Indigo Tree Digital Ltd.
-
 See the LICENSE file for license information.
 
-Based on prior work from https://github.com/wpengine/github-action-wpe-site-deploy
+Copyright (C) 2021-present, Indigo Tree Digital Ltd.
+
+This project was based on prior work from https://github.com/wpengine/github-action-wpe-site-deploy
+Copyright (c) 2021 WP Engine
+
