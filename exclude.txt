@@ -43,7 +43,6 @@ wp-content/cache/supercache/*
 .gitattributes
 .wpe-devkit/
 .wpengine-conf/
-_wpeprivate
 wp-content/object-cache.php
 wp-content/mu-plugins/mu-plugin.php
 wp-content/mu-plugins/slt-force-strong-passwords.php
