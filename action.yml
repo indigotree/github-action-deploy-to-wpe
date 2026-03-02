@@ -5,7 +5,7 @@ branding:
 description: "Deploy WordPress projects to WP Engine"
 inputs:
   WPE_SSHG_KEY_PRIVATE:
-    description: "The private RSA key you will save in the Github Secrets"
+    description: "Base64-encoded private RSA key (single line). Encode with: base64 -w 0 < key (Linux) or base64 -i key (macOS)."
     required: true
   PHP_LINT:
     description: "optional php syntax check"

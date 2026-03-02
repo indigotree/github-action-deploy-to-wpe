@@ -39,26 +39,30 @@ if [ ! -d ${HOME}/.ssh ]; then
   echo "using established SSH KEY path...";
 fi
 
-# Copy Secret Keys to container
-WPE_SSHG_KEY_PRIVATE_PATH="$SSH_PATH/github_action"  
-echo "$INPUT_WPE_SSHG_KEY_PRIVATE" > "$WPE_SSHG_KEY_PRIVATE_PATH"
+# Write private key from base64 (single-line secret avoids env newline/escaping issues in Docker actions).
+WPE_SSHG_KEY_PRIVATE_PATH="${SSH_PATH}/github_action"
+echo "$INPUT_WPE_SSHG_KEY_PRIVATE" | base64 -d > "$WPE_SSHG_KEY_PRIVATE_PATH"
 chmod 600 "$WPE_SSHG_KEY_PRIVATE_PATH"
+if ! head -n1 "$WPE_SSHG_KEY_PRIVATE_PATH" | grep -q '-----BEGIN'; then
+    echo "ERROR: Decoded key does not look like PEM. Store the secret as base64: base64 -w 0 < key (Linux) or base64 -i key (macOS)."
+    exit 1
+fi
 
 # Establish known hosts
-KNOWN_HOSTS_PATH="$SSH_PATH/known_hosts" 
-ssh-keyscan -t rsa "$WPE_SSH_HOST" >> "$KNOWN_HOSTS_PATH" 
+KNOWN_HOSTS_PATH="${SSH_PATH}/known_hosts"
+ssh-keyscan -t rsa "$WPE_SSH_HOST" >> "$KNOWN_HOSTS_PATH" 2>/dev/null || true
 chmod 644 "$KNOWN_HOSTS_PATH"
 
 echo "prepping file perms..."
-find $SRC_PATH -type d -exec chmod -R 775 {} \;
-find $SRC_PATH -type f -exec chmod -R 664 {} \;
+find "$SRC_PATH" -type d -exec chmod 775 {} \;
+find "$SRC_PATH" -type f -exec chmod 664 {} \;
 echo "file perms set..."
 
 # pre deploy php lint
 if [ "${INPUT_PHP_LINT^^}" == "TRUE" ]; then
     echo "Begin PHP Linting."
-    for file in $(find $SRC_PATH/ -name "*.php"); do
-        php -l $file
+    for file in $(find "$SRC_PATH/" -name "*.php"); do
+        php -l "$file"
         status=$?
         if [[ $status -ne 0 ]]; then
             echo "FAILURE: Linting failed - $file :: $status" && exit 1
@@ -86,17 +90,17 @@ fi
 
 # Deploy via SSH
 # setup master ssh connection 
-ssh -nNf -v -i ${WPE_SSHG_KEY_PRIVATE_PATH} -o StrictHostKeyChecking=no -o ControlMaster=yes -o ControlPath="$SSH_PATH/ctl/%C" $WPE_FULL_HOST
+ssh -nNf -v -i "$WPE_SSHG_KEY_PRIVATE_PATH" -o StrictHostKeyChecking=no -o ControlMaster=yes -o ControlPath="${SSH_PATH}/ctl/%C" "$WPE_FULL_HOST"
 
 echo "!!! MASTER SSH CONNECTION ESTABLISHED !!!"
-rsync --rsh="ssh -v -p 22 -i ${WPE_SSHG_KEY_PRIVATE_PATH} -o StrictHostKeyChecking=no -o 'ControlPath=$SSH_PATH/ctl/%C'" $INPUT_FLAGS --exclude-from='/exclude.txt' $SRC_PATH "$WPE_DESTINATION"
+rsync --rsh="ssh -v -p 22 -i ${WPE_SSHG_KEY_PRIVATE_PATH} -o StrictHostKeyChecking=no -o ControlPath=${SSH_PATH}/ctl/%C" $INPUT_FLAGS --exclude-from='/exclude.txt' "$SRC_PATH" "$WPE_DESTINATION"
 
 # post deploy script and cache clear
 if [[ -n ${SCRIPT} || -n ${CACHE_CLEAR} ]]; then 
-    ssh -v -p 22 -i ${WPE_SSHG_KEY_PRIVATE_PATH} -o StrictHostKeyChecking=no -o ControlPath="$SSH_PATH/ctl/%C" $WPE_FULL_HOST "cd sites/${WPE_ENV_NAME} ${SCRIPT} ${CACHE_CLEAR}"
+    ssh -v -p 22 -i "$WPE_SSHG_KEY_PRIVATE_PATH" -o StrictHostKeyChecking=no -o ControlPath="${SSH_PATH}/ctl/%C" "$WPE_FULL_HOST" "cd sites/${WPE_ENV_NAME} ${SCRIPT} ${CACHE_CLEAR}"
 fi
 
 # close master ssh
-ssh -O exit -o ControlPath="$SSH_PATH/ctl/%C" $WPE_FULL_HOST
+ssh -O exit -o ControlPath="${SSH_PATH}/ctl/%C" "$WPE_FULL_HOST"
 
 echo "SUCCESS: Your code has been deployed to WP Engine!"
