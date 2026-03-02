@@ -43,7 +43,7 @@ fi
 WPE_SSHG_KEY_PRIVATE_PATH="${SSH_PATH}/github_action"
 echo "$INPUT_WPE_SSHG_KEY_PRIVATE" | base64 -d > "$WPE_SSHG_KEY_PRIVATE_PATH"
 chmod 600 "$WPE_SSHG_KEY_PRIVATE_PATH"
-if ! head -n1 "$WPE_SSHG_KEY_PRIVATE_PATH" | grep -q '-----BEGIN'; then
+if ! head -n1 "$WPE_SSHG_KEY_PRIVATE_PATH" | grep -q -- '-----BEGIN'; then
     echo "ERROR: Decoded key does not look like PEM. Store the secret as base64: base64 -w 0 < key (Linux) or base64 -i key (macOS)."
     exit 1
 fi
