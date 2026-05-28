@@ -1,4 +1,4 @@
-FROM instrumentisto/rsync-ssh:alpine3.13-r4
+FROM instrumentisto/rsync-ssh:alpine3.23-r3
 LABEL "com.github.actions.name"="GitHub Action to deploy WordPress projects to WP Engine"
 LABEL "com.github.actions.description"="An action used to deploy code from a GitHub repo to a WP Engine environment of your choosing"
 LABEL "com.github.actions.icon"="upload-cloud"

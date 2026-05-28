@@ -4,14 +4,14 @@ set -e
 
 : ${INPUT_WPE_SSHG_KEY_PRIVATE?Required secret not set.}
 
-if [[ $GITHUB_REF =~ ${INPUT_PRD_BRANCH}$ ]]; then
-    export WPE_ENV_NAME=$INPUT_PRD_ENV;
-elif [[ $GITHUB_REF =~ ${INPUT_STG_BRANCH}$ ]]; then
-    export WPE_ENV_NAME=$INPUT_STG_ENV;
-elif [[ $GITHUB_REF =~ ${INPUT_DEV_BRANCH}$ ]]; then
-    export WPE_ENV_NAME=$INPUT_DEV_ENV;
+if [[ "$GITHUB_REF" == "refs/heads/${INPUT_PRD_BRANCH}" ]]; then
+    export WPE_ENV_NAME=$INPUT_PRD_ENV
+elif [[ -n "$INPUT_STG_BRANCH" && "$INPUT_STG_BRANCH" != "STAGE_BRANCH_HERE" && "$GITHUB_REF" == "refs/heads/${INPUT_STG_BRANCH}" ]]; then
+    export WPE_ENV_NAME=$INPUT_STG_ENV
+elif [[ -n "$INPUT_DEV_BRANCH" && "$INPUT_DEV_BRANCH" != "DEV_BRANCH_HERE" && "$GITHUB_REF" == "refs/heads/${INPUT_DEV_BRANCH}" ]]; then
+    export WPE_ENV_NAME=$INPUT_DEV_ENV
 else
-    echo "FAILURE: Branch name required." && exit 1;
+    echo "FAILURE: Branch ${GITHUB_REF} does not match PRD_BRANCH, STG_BRANCH, or DEV_BRANCH." && exit 1
 fi
 
 echo "Deploying $GITHUB_REF to $WPE_ENV_NAME..."
@@ -50,8 +50,16 @@ fi
 
 # Establish known hosts
 KNOWN_HOSTS_PATH="${SSH_PATH}/known_hosts"
-ssh-keyscan -t rsa "$WPE_SSH_HOST" >> "$KNOWN_HOSTS_PATH" 2>/dev/null || true
+ssh-keyscan "$WPE_SSH_HOST" >> "$KNOWN_HOSTS_PATH" 2>/dev/null
+if [[ ! -s "$KNOWN_HOSTS_PATH" ]]; then
+    echo "ERROR: Could not populate known_hosts for ${WPE_SSH_HOST}."
+    exit 1
+fi
 chmod 644 "$KNOWN_HOSTS_PATH"
+
+SSH_IDENTITY=(-i "$WPE_SSHG_KEY_PRIVATE_PATH")
+SSH_KNOWN_HOSTS=(-o "StrictHostKeyChecking=yes" -o "UserKnownHostsFile=${KNOWN_HOSTS_PATH}")
+SSH_CONTROL_PATH="${SSH_PATH}/ctl/%C"
 
 echo "prepping file perms..."
 find "$SRC_PATH" -type d -exec chmod 775 {} \;
@@ -89,18 +97,19 @@ if [ "${INPUT_CACHE_CLEAR^^}" == "TRUE" ]; then
 fi
 
 # Deploy via SSH
-# setup master ssh connection 
-ssh -nNf -v -i "$WPE_SSHG_KEY_PRIVATE_PATH" -o StrictHostKeyChecking=no -o ControlMaster=yes -o ControlPath="${SSH_PATH}/ctl/%C" "$WPE_FULL_HOST"
+# setup master ssh connection
+ssh -nNf "${SSH_IDENTITY[@]}" "${SSH_KNOWN_HOSTS[@]}" -o ControlMaster=yes -o ControlPath="${SSH_CONTROL_PATH}" "$WPE_FULL_HOST"
 
 echo "!!! MASTER SSH CONNECTION ESTABLISHED !!!"
-rsync --rsh="ssh -v -p 22 -i ${WPE_SSHG_KEY_PRIVATE_PATH} -o StrictHostKeyChecking=no -o ControlPath=${SSH_PATH}/ctl/%C" $INPUT_FLAGS --exclude-from='/exclude.txt' "$SRC_PATH" "$WPE_DESTINATION"
+RSYNC_RSH="ssh -p 22 -i ${WPE_SSHG_KEY_PRIVATE_PATH} -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${KNOWN_HOSTS_PATH} -o ControlPath=${SSH_CONTROL_PATH}"
+rsync --rsh="$RSYNC_RSH" $INPUT_FLAGS --exclude-from='/exclude.txt' "$SRC_PATH" "$WPE_DESTINATION"
 
 # post deploy script and cache clear
-if [[ -n ${SCRIPT} || -n ${CACHE_CLEAR} ]]; then 
-    ssh -v -p 22 -i "$WPE_SSHG_KEY_PRIVATE_PATH" -o StrictHostKeyChecking=no -o ControlPath="${SSH_PATH}/ctl/%C" "$WPE_FULL_HOST" "cd sites/${WPE_ENV_NAME} ${SCRIPT} ${CACHE_CLEAR}"
+if [[ -n ${SCRIPT} || -n ${CACHE_CLEAR} ]]; then
+    ssh -p 22 "${SSH_IDENTITY[@]}" "${SSH_KNOWN_HOSTS[@]}" -o ControlPath="${SSH_CONTROL_PATH}" "$WPE_FULL_HOST" "cd sites/${WPE_ENV_NAME} ${SCRIPT} ${CACHE_CLEAR}"
 fi
 
 # close master ssh
-ssh -O exit -o ControlPath="${SSH_PATH}/ctl/%C" "$WPE_FULL_HOST"
+ssh -O exit -o ControlPath="${SSH_CONTROL_PATH}" "$WPE_FULL_HOST"
 
 echo "SUCCESS: Your code has been deployed to WP Engine!"
