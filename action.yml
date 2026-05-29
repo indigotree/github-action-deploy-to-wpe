@@ -5,7 +5,7 @@ branding:
 description: "Deploy WordPress to WP Engine via SSH Gateway. Requires DEPLOYS JSON array of rsync jobs."
 inputs:
   WPE_SSHG_KEY_PRIVATE:
-    description: "Base64-encoded private RSA key (single line). Encode with: base64 -w 0 < key (Linux) or base64 -i key (macOS)."
+    description: "The private RSA key stored in GitHub Secrets (raw PEM)."
     required: true
   DEPLOYS:
     description: "JSON array of deploy jobs (src and flags required; optional name and dest). Inline in workflow YAML."

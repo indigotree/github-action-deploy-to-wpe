@@ -17,17 +17,7 @@ Pin `uses:` to a [commit SHA or branch](https://docs.github.com/en/actions/using
 2. **SSH private key (GitHub)**
 
 - [Generate an SSH key pair](https://wpengine.com/support/ssh-keys-for-shell-access/#Generate_New_SSH_Key) if needed.
-- Encode the private key as a single-line base64 string:
-
-  ```bash
-  # Linux
-  base64 -w 0 < path/to/private_key > secret.txt
-
-  # macOS
-  base64 -i path/to/private_key > secret.txt
-  ```
-
-- Store the output as repository or organization secret `WPE_SSHG_KEY_PRIVATE`.
+- Paste the SSH private key (PEM) into your [repository](https://docs.github.com/en/actions/security-guides/encrypted-secrets#creating-encrypted-secrets-for-a-repository) or [organization](https://docs.github.com/en/actions/security-guides/encrypted-secrets#creating-encrypted-secrets-for-an-organization) secret `WPE_SSHG_KEY_PRIVATE`.
 
 3. **SSH public key (WP Engine)**
 
@@ -43,12 +33,12 @@ Branch names must match the pushed ref exactly (`refs/heads/<name>`). Use `on.pu
 
 Each object:
 
-| Field   | Required | Description |
-| ------- | -------- | ----------- |
-| `src`   | Yes      | Source path in the checkout (globs allowed, e.g. `wp-content/plugins/foo-*`) |
+| Field   | Required | Description                                                                    |
+| ------- | -------- | ------------------------------------------------------------------------------ |
+| `src`   | Yes      | Source path in the checkout (globs allowed, e.g. `wp-content/plugins/foo-*`)   |
 | `flags` | Yes      | Rsync flags for this job (e.g. `-azvr --inplace --exclude-from=.deployignore`) |
-| `dest`  | No       | Destination directory on the server (default `""` = site root relative) |
-| `name`  | No       | Label for logs only |
+| `dest`  | No       | Destination directory on the server (default `""` = site root relative)        |
+| `name`  | No       | Label for logs only                                                            |
 
 Jobs run **in array order** on one SSH session.
 
@@ -128,16 +118,18 @@ Minimal single-job example:
 
 If you previously used several deploy steps with `TPO_SRC_PATH`, `TPO_PATH`, and `FLAGS`:
 
-| Old input        | DEPLOYS field |
-| ---------------- | ------------- |
-| `TPO_SRC_PATH`   | `src`         |
-| `TPO_PATH`       | `dest`        |
-| `FLAGS`          | `flags`       |
+| Old input      | DEPLOYS field |
+| -------------- | ------------- |
+| `TPO_SRC_PATH` | `src`         |
+| `TPO_PATH`     | `dest`        |
+| `FLAGS`        | `flags`       |
 
 1. Merge each old step into one object in the `DEPLOYS` array (preserve order).
 2. Use a single `uses:` step with `DEPLOYS: |`.
 3. Set `CACHE_CLEAR: FALSE` unless you want a post-deploy flush (default is `false`).
 4. Pin `uses:` to the commit SHA that includes `DEPLOYS` support.
+
+`WPE_SSHG_KEY_PRIVATE` format is unchanged from v0.4.0 (raw PEM in GitHub Secrets).
 
 Removed inputs: `TPO_SRC_PATH`, `TPO_PATH`, `FLAGS`, `SCRIPT`.
 
@@ -145,23 +137,23 @@ Removed inputs: `TPO_SRC_PATH`, `TPO_PATH`, `FLAGS`, `SCRIPT`.
 
 ### Required
 
-| Name                   | Type    | Usage |
-| ---------------------- | ------- | ----- |
-| `DEPLOYS`              | string  | JSON array of deploy jobs (inline in workflow YAML). |
+| Name                   | Type    | Usage                                                        |
+| ---------------------- | ------- | ------------------------------------------------------------ |
+| `DEPLOYS`              | string  | JSON array of deploy jobs (inline in workflow YAML).         |
 | `PRD_BRANCH`           | string  | Production branch name (exact match to `refs/heads/<name>`). |
-| `PRD_ENV`              | string  | WP Engine production environment name. |
-| `WPE_SSHG_KEY_PRIVATE` | secrets | Base64-encoded private SSH key. |
+| `PRD_ENV`              | string  | WP Engine production environment name.                       |
+| `WPE_SSHG_KEY_PRIVATE` | secrets | Private SSH key (raw PEM).                                   |
 
 ### Optional
 
-| Name         | Type   | Usage |
-| ------------ | ------ | ----- |
-| `STG_BRANCH` | string | Staging branch (exact match). Leave placeholder if unused. |
-| `STG_ENV`    | string | WP Engine staging environment. |
-| `DEV_BRANCH` | string | Development branch (exact match). |
-| `DEV_ENV`    | string | WP Engine development environment. |
-| `PHP_LINT`   | bool   | `TRUE` to run `php -l` on each job `src` before deploy. Default `false`. |
-| `CACHE_CLEAR`| bool   | `TRUE` to flush page and CDN cache after all jobs. Default `false`. |
+| Name          | Type   | Usage                                                                    |
+| ------------- | ------ | ------------------------------------------------------------------------ |
+| `STG_BRANCH`  | string | Staging branch (exact match). Leave placeholder if unused.               |
+| `STG_ENV`     | string | WP Engine staging environment.                                           |
+| `DEV_BRANCH`  | string | Development branch (exact match).                                        |
+| `DEV_ENV`     | string | WP Engine development environment.                                       |
+| `PHP_LINT`    | bool   | `TRUE` to run `php -l` on each job `src` before deploy. Default `false`. |
+| `CACHE_CLEAR` | bool   | `TRUE` to flush page and CDN cache after all jobs. Default `false`.      |
 
 ## Further reading
 
