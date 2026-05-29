@@ -2,105 +2,170 @@
 
 set -e
 
-: ${INPUT_WPE_SSHG_KEY_PRIVATE?Required secret not set.}
+SSH_MASTER_OPEN=0
 
-if [[ $GITHUB_REF =~ ${INPUT_PRD_BRANCH}$ ]]; then
-    export WPE_ENV_NAME=$INPUT_PRD_ENV;
-elif [[ $GITHUB_REF =~ ${INPUT_STG_BRANCH}$ ]]; then
-    export WPE_ENV_NAME=$INPUT_STG_ENV;
-elif [[ $GITHUB_REF =~ ${INPUT_DEV_BRANCH}$ ]]; then
-    export WPE_ENV_NAME=$INPUT_DEV_ENV;
-else
-    echo "FAILURE: Branch name required." && exit 1;
-fi
+: "${INPUT_WPE_SSHG_KEY_PRIVATE?Required secret not set.}"
+: "${INPUT_DEPLOYS?DEPLOYS is required. Provide a JSON array of deploy jobs.}"
 
-echo "Deploying $GITHUB_REF to $WPE_ENV_NAME..."
+resolve_environment() {
+    if [[ "$GITHUB_REF" == "refs/heads/${INPUT_PRD_BRANCH}" ]]; then
+        export WPE_ENV_NAME=$INPUT_PRD_ENV
+    elif [[ -n "$INPUT_STG_BRANCH" && "$INPUT_STG_BRANCH" != "STAGE_BRANCH_HERE" && "$GITHUB_REF" == "refs/heads/${INPUT_STG_BRANCH}" ]]; then
+        export WPE_ENV_NAME=$INPUT_STG_ENV
+    elif [[ -n "$INPUT_DEV_BRANCH" && "$INPUT_DEV_BRANCH" != "DEV_BRANCH_HERE" && "$GITHUB_REF" == "refs/heads/${INPUT_DEV_BRANCH}" ]]; then
+        export WPE_ENV_NAME=$INPUT_DEV_ENV
+    else
+        echo "FAILURE: Branch ${GITHUB_REF} does not match PRD_BRANCH, STG_BRANCH, or DEV_BRANCH." && exit 1
+    fi
 
-# Deploy Vars
-WPE_SSH_HOST="$WPE_ENV_NAME.ssh.wpengine.net"
-DIR_PATH="$INPUT_TPO_PATH"
-SRC_PATH="$INPUT_TPO_SRC_PATH"
+    echo "Deploying ${GITHUB_REF} to ${WPE_ENV_NAME}..."
 
-# Set up our user and path
-WPE_SSH_USER="$WPE_ENV_NAME"@"$WPE_SSH_HOST"
-WPE_FULL_HOST="$WPE_SSH_USER"
-WPE_DESTINATION="$WPE_SSH_USER":sites/"$WPE_ENV_NAME"/"$DIR_PATH"
+    WPE_SSH_HOST="${WPE_ENV_NAME}.ssh.wpengine.net"
+    WPE_SSH_USER="${WPE_ENV_NAME}@${WPE_SSH_HOST}"
+    WPE_FULL_HOST="${WPE_SSH_USER}"
+}
 
+validate_deploys() {
+    if ! echo "$INPUT_DEPLOYS" | jq -e 'type == "array" and length > 0' >/dev/null; then
+        echo "ERROR: DEPLOYS must be a non-empty JSON array."
+        exit 1
+    fi
 
-# Setup our SSH Connection & use keys
-if [ ! -d ${HOME}/.ssh ]; then 
-    mkdir "${HOME}/.ssh" 
-    SSH_PATH="${HOME}/.ssh" 
-    mkdir "${SSH_PATH}/ctl/"
-    # Set Key Perms 
-    chmod -R 700 "$SSH_PATH"
-  else 
-  SSH_PATH="${HOME}/.ssh" 
-  echo "using established SSH KEY path...";
-fi
-
-# Write private key from base64 (single-line secret avoids env newline/escaping issues in Docker actions).
-WPE_SSHG_KEY_PRIVATE_PATH="${SSH_PATH}/github_action"
-printf '%s' "$INPUT_WPE_SSHG_KEY_PRIVATE" | tr -d '\n' | base64 -d > "$WPE_SSHG_KEY_PRIVATE_PATH"
-chmod 600 "$WPE_SSHG_KEY_PRIVATE_PATH"
-if ! head -n1 "$WPE_SSHG_KEY_PRIVATE_PATH" | grep -q -- '-----BEGIN'; then
-    echo "ERROR: Decoded key does not look like PEM. Store the secret as base64: base64 -w 0 < key (Linux) or base64 -i key (macOS)."
-    exit 1
-fi
-
-# Establish known hosts
-KNOWN_HOSTS_PATH="${SSH_PATH}/known_hosts"
-ssh-keyscan -t rsa "$WPE_SSH_HOST" >> "$KNOWN_HOSTS_PATH" 2>/dev/null || true
-chmod 644 "$KNOWN_HOSTS_PATH"
-
-echo "prepping file perms..."
-find "$SRC_PATH" -type d -exec chmod 775 {} \;
-find "$SRC_PATH" -type f -exec chmod 664 {} \;
-echo "file perms set..."
-
-# pre deploy php lint
-if [ "${INPUT_PHP_LINT^^}" == "TRUE" ]; then
-    echo "Begin PHP Linting."
-    for file in $(find "$SRC_PATH/" -name "*.php"); do
-        php -l "$file"
-        status=$?
-        if [[ $status -ne 0 ]]; then
-            echo "FAILURE: Linting failed - $file :: $status" && exit 1
+    DEPLOY_COUNT=$(echo "$INPUT_DEPLOYS" | jq 'length')
+    for ((i = 0; i < DEPLOY_COUNT; i++)); do
+        src=$(echo "$INPUT_DEPLOYS" | jq -r ".[$i].src // empty")
+        flags=$(echo "$INPUT_DEPLOYS" | jq -r ".[$i].flags // empty")
+        if [[ -z "$src" || -z "$flags" ]]; then
+            echo "ERROR: DEPLOYS[$i] requires non-empty src and flags."
+            exit 1
         fi
     done
-    echo "PHP Lint Successful! No errors detected!"
-else 
-    echo "Skipping PHP Linting."
-fi
 
-# post deploy script 
-if [[ -n ${INPUT_SCRIPT} ]]; then 
-    SCRIPT="&& sh ${INPUT_SCRIPT}"; 
-  else 
-    SCRIPT=""
-fi 
+    echo "Validated ${DEPLOY_COUNT} deploy job(s)."
+}
 
-# post deploy cache clear
-if [ "${INPUT_CACHE_CLEAR^^}" == "TRUE" ]; then
-    CACHE_CLEAR="&& wp --skip-plugins --skip-themes page-cache flush && wp --skip-plugins --skip-themes cdn-cache flush"
-  elif [ "${INPUT_CACHE_CLEAR^^}" == "FALSE" ]; then
-      CACHE_CLEAR=""
-  else echo "CACHE_CLEAR must be TRUE or FALSE only... Cache not cleared..."  && exit 1;
-fi
+prep_paths_and_lint() {
+    local job src
+    local -A prepped_srcs=()
 
-# Deploy via SSH
-# setup master ssh connection 
-ssh -nNf -v -i "$WPE_SSHG_KEY_PRIVATE_PATH" -o StrictHostKeyChecking=no -o ControlMaster=yes -o ControlPath="${SSH_PATH}/ctl/%C" "$WPE_FULL_HOST"
+    while IFS= read -r job; do
+        src=$(echo "$job" | jq -r '.src')
+        if [[ -n "${prepped_srcs[$src]:-}" ]]; then
+            continue
+        fi
+        prepped_srcs[$src]=1
 
-echo "!!! MASTER SSH CONNECTION ESTABLISHED !!!"
-rsync --rsh="ssh -v -p 22 -i ${WPE_SSHG_KEY_PRIVATE_PATH} -o StrictHostKeyChecking=no -o ControlPath=${SSH_PATH}/ctl/%C" $INPUT_FLAGS --exclude-from='/exclude.txt' "$SRC_PATH" "$WPE_DESTINATION"
+        if [[ ! -e "$src" ]]; then
+            echo "WARNING: src path does not exist (may be a glob): ${src}"
+        else
+            echo "Prepping file perms for ${src}..."
+            find "$src" -type d -exec chmod 775 {} \;
+            find "$src" -type f -exec chmod 664 {} \;
+        fi
 
-# post deploy script and cache clear
-if [[ -n ${SCRIPT} || -n ${CACHE_CLEAR} ]]; then 
-    ssh -v -p 22 -i "$WPE_SSHG_KEY_PRIVATE_PATH" -o StrictHostKeyChecking=no -o ControlPath="${SSH_PATH}/ctl/%C" "$WPE_FULL_HOST" "cd sites/${WPE_ENV_NAME} ${SCRIPT} ${CACHE_CLEAR}"
-fi
+        if [[ "${INPUT_PHP_LINT^^}" == "TRUE" ]]; then
+            echo "PHP lint for ${src}..."
+            while IFS= read -r -d '' file; do
+                php -l "$file"
+            done < <(find "$src" -name "*.php" -print0 2>/dev/null || true)
+        fi
+    done < <(echo "$INPUT_DEPLOYS" | jq -c '.[]')
 
-# close master ssh
-ssh -O exit -o ControlPath="${SSH_PATH}/ctl/%C" "$WPE_FULL_HOST"
+    if [[ "${INPUT_PHP_LINT^^}" != "TRUE" ]]; then
+        echo "Skipping PHP linting."
+    else
+        echo "PHP lint successful for all checked paths."
+    fi
+}
+
+teardown_ssh() {
+    if [[ "$SSH_MASTER_OPEN" -eq 1 ]]; then
+        ssh -O exit -o ControlPath="${SSH_CONTROL_PATH}" "$WPE_FULL_HOST" 2>/dev/null || true
+        SSH_MASTER_OPEN=0
+    fi
+}
+
+setup_ssh() {
+    if [[ ! -d ${HOME}/.ssh ]]; then
+        mkdir "${HOME}/.ssh"
+        SSH_PATH="${HOME}/.ssh"
+        mkdir "${SSH_PATH}/ctl/"
+        chmod -R 700 "$SSH_PATH"
+    else
+        SSH_PATH="${HOME}/.ssh"
+        echo "Using established SSH path..."
+    fi
+
+    WPE_SSHG_KEY_PRIVATE_PATH="${SSH_PATH}/github_action"
+    printf '%s' "$INPUT_WPE_SSHG_KEY_PRIVATE" | tr -d '\n' | base64 -d > "$WPE_SSHG_KEY_PRIVATE_PATH"
+    chmod 600 "$WPE_SSHG_KEY_PRIVATE_PATH"
+    if ! head -n1 "$WPE_SSHG_KEY_PRIVATE_PATH" | grep -q -- '-----BEGIN'; then
+        echo "ERROR: Decoded key does not look like PEM. Store the secret as base64: base64 -w 0 < key (Linux) or base64 -i key (macOS)."
+        exit 1
+    fi
+
+    KNOWN_HOSTS_PATH="${SSH_PATH}/known_hosts"
+    : > "$KNOWN_HOSTS_PATH"
+    ssh-keyscan "$WPE_SSH_HOST" >> "$KNOWN_HOSTS_PATH" 2>/dev/null
+    if [[ ! -s "$KNOWN_HOSTS_PATH" ]]; then
+        echo "ERROR: Could not populate known_hosts for ${WPE_SSH_HOST}."
+        exit 1
+    fi
+    chmod 644 "$KNOWN_HOSTS_PATH"
+
+    SSH_IDENTITY=(-i "$WPE_SSHG_KEY_PRIVATE_PATH")
+    SSH_KNOWN_HOSTS=(-o "StrictHostKeyChecking=yes" -o "UserKnownHostsFile=${KNOWN_HOSTS_PATH}")
+    SSH_CONTROL_PATH="${SSH_PATH}/ctl/%C"
+    RSYNC_RSH="ssh -p 22 -i ${WPE_SSHG_KEY_PRIVATE_PATH} -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${KNOWN_HOSTS_PATH} -o ControlPath=${SSH_CONTROL_PATH}"
+
+    trap teardown_ssh EXIT
+
+    ssh -nNf "${SSH_IDENTITY[@]}" "${SSH_KNOWN_HOSTS[@]}" -o ControlMaster=yes -o ControlPath="${SSH_CONTROL_PATH}" "$WPE_FULL_HOST"
+    SSH_MASTER_OPEN=1
+    echo "Master SSH connection established."
+}
+
+run_rsync_jobs() {
+    local job index=0 total
+    local name src dest flags destination
+
+    total=$(echo "$INPUT_DEPLOYS" | jq 'length')
+
+    while IFS= read -r job; do
+        index=$((index + 1))
+        name=$(echo "$job" | jq -r '.name // empty')
+        src=$(echo "$job" | jq -r '.src')
+        dest=$(echo "$job" | jq -r '.dest // ""')
+        flags=$(echo "$job" | jq -r '.flags')
+        destination="${WPE_SSH_USER}:sites/${WPE_ENV_NAME}/${dest}"
+
+        if [[ -n "$name" ]]; then
+            echo "Deploy job ${index}/${total}: ${name}"
+        else
+            echo "Deploy job ${index}/${total}"
+        fi
+
+        rsync --rsh="$RSYNC_RSH" $flags --exclude-from='/exclude.txt' "$src" "$destination"
+    done < <(echo "$INPUT_DEPLOYS" | jq -c '.[]')
+}
+
+maybe_cache_clear() {
+    if [[ "${INPUT_CACHE_CLEAR^^}" == "TRUE" ]]; then
+        echo "Clearing page and CDN cache..."
+        ssh -p 22 "${SSH_IDENTITY[@]}" "${SSH_KNOWN_HOSTS[@]}" -o ControlPath="${SSH_CONTROL_PATH}" "$WPE_FULL_HOST" \
+            "cd sites/${WPE_ENV_NAME} && wp --skip-plugins --skip-themes page-cache flush && wp --skip-plugins --skip-themes cdn-cache flush"
+    elif [[ "${INPUT_CACHE_CLEAR^^}" != "FALSE" ]]; then
+        echo "CACHE_CLEAR must be TRUE or FALSE." && exit 1
+    fi
+}
+
+resolve_environment
+validate_deploys
+prep_paths_and_lint
+setup_ssh
+run_rsync_jobs
+maybe_cache_clear
+teardown_ssh
+trap - EXIT
 
 echo "SUCCESS: Your code has been deployed to WP Engine!"

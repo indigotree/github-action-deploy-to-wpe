@@ -1,130 +1,179 @@
 # GitHub Action to deploy WordPress projects to WP Engine
 
-This GitHub Action is used to deploy code from a GitHub repo to a WP Engine environment of your choosing. Deploy a full site directory or a sub-directory of your WordPress install. Other options include performing a PHP Lint, custom rsync flags, clearing cache, and a executing a post-deploy script of your choosing.
+Indigo Tree fork of the WP Engine deploy action. Deploy from a GitHub repo to a WP Engine environment via SSH Gateway and rsync.
+
+One workflow step can run **multiple rsync jobs** over a **single SSH connection** by passing a `DEPLOYS` JSON array.
+
+Pin `uses:` to a [commit SHA or branch](https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#using-versioned-actions).
 
 ## Setup Instructions
 
-Follow along with the [video tutorial here!](https://wpengine-2.wistia.com/medias/crj1lp3qke)
+1. **Workflow**
 
-1. **MAIN.YML SETUP**
+- Add a deploy workflow under `.github/workflows/` (see [Example](#example-platform-deploy-step)).
+- Set `DEPLOYS` to a JSON array of jobs (see [DEPLOYS schema](#deploys-schema)).
+- Configure branch and environment inputs (`PRD_BRANCH`, `PRD_ENV`, etc.).
 
-- Copy the following `main.yml` to `.github/workflows/main.yml` in your root of your local WordPress project/repo, replacing values of `PRD_BRANCH`, `PRD_ENV` for the branch and WPE Environment name of your choice. Optional vars can be specified as well. Consult ["Environment Variable & Secrets"](#environment-variables--secrets) for more available options.
+2. **SSH private key (GitHub)**
 
-2. **SSH PRIVATE KEY SETUP IN GITHUB**
+- [Generate an SSH key pair](https://wpengine.com/support/ssh-keys-for-shell-access/#Generate_New_SSH_Key) if needed.
+- Encode the private key as a single-line base64 string:
 
-- [Generate a new SSH key pair](https://wpengine.com/support/ssh-keys-for-shell-access/#Generate_New_SSH_Key) if you have not already done so.
+  ```bash
+  # Linux
+  base64 -w 0 < path/to/private_key > secret.txt
 
-- Add the _SSH Private Key_ to your [Repository Secrets](https://docs.github.com/en/actions/security-guides/encrypted-secrets#creating-encrypted-secrets-for-a-repository) or your [Organization Secrets](https://docs.github.com/en/actions/security-guides/encrypted-secrets#creating-encrypted-secrets-for-an-organization). Save the new secret "Name" as `WPE_SSHG_KEY_PRIVATE`.
+  # macOS
+  base64 -i path/to/private_key > secret.txt
+  ```
 
-**NOTE:** If using a GitHub Organization, adding the SSH key to the Organization Secrets will allow all repos to reference the same SSH key for deploys using the method in the sample `main.yml`. The SSH Key also connects to all installs made available to its WP Engine User. One key can then effectively be used to deploy all projects to their respective sites on WP Engine. Less work. More deploys!
+- Store the output as repository or organization secret `WPE_SSHG_KEY_PRIVATE`.
 
-3. **SSH PUBLIC KEY SETUP IN WP ENGINE**
+3. **SSH public key (WP Engine)**
 
-- Add _SSH Public Key_ to WP Engine SSH Gateway Key settings. [This Guide will show you how.](https://wpengine.com/support/ssh-gateway/#Add_SSH_Key)
+- Add the public key to [SSH Gateway](https://wpengine.com/support/ssh-gateway/#Add_SSH_Key). This action does not use GitPush keys.
 
-  **NOTE:** This Action DOES NOT utilize WP Engine GitPush or the GitPush SSH keys [found here.](https://wpengine.com/support/git/#Add_SSH_Key_to_User_Portal)
+4. Push to a configured branch. View logs under **Actions**.
 
-4. Git push your site GitHub repo. The action will do the rest!
+Branch names must match the pushed ref exactly (`refs/heads/<name>`). Use `on.push.branches` to match `PRD_BRANCH`, `STG_BRANCH`, and `DEV_BRANCH`.
 
-View your actions progress and logs by navigating to the "Actions" tab in your repo.
+## DEPLOYS schema
 
-## Example GitHub Action workflow
+`DEPLOYS` is a JSON **array** inline in the workflow step (`DEPLOYS: |`).
 
-### Simple main.yml:
+Each object:
 
+| Field   | Required | Description |
+| ------- | -------- | ----------- |
+| `src`   | Yes      | Source path in the checkout (globs allowed, e.g. `wp-content/plugins/foo-*`) |
+| `flags` | Yes      | Rsync flags for this job (e.g. `-azvr --inplace --exclude-from=.deployignore`) |
+| `dest`  | No       | Destination directory on the server (default `""` = site root relative) |
+| `name`  | No       | Label for logs only |
+
+Jobs run **in array order** on one SSH session.
+
+## Example platform deploy step
+
+Replace multiple `uses:` deploy steps with one step like this (pin `@<commit-sha>` after merging this action):
+
+```yaml
+      - name: Deploy to WP Engine
+        uses: indigotree/github-action-deploy-to-wpe@<pin>
+        with:
+          WPE_SSHG_KEY_PRIVATE: ${{ secrets.WPE_SSHG_KEY_PRIVATE }}
+          CACHE_CLEAR: FALSE
+          PHP_LINT: FALSE
+          DEV_BRANCH: ${{ env.DEV_BRANCH }}
+          STG_BRANCH: ${{ env.STG_BRANCH }}
+          PRD_BRANCH: ${{ env.PRD_BRANCH }}
+          DEV_ENV: ${{ env.DEV_ENV }}
+          STG_ENV: ${{ env.STG_ENV }}
+          PRD_ENV: ${{ env.PRD_ENV }}
+          DEPLOYS: |
+            [
+              {
+                "name": "plugins-once",
+                "src": "wp-content/plugins",
+                "dest": "wp-content",
+                "flags": "-azvr --inplace --ignore-existing --exclude-from=.deployignore"
+              },
+              {
+                "name": "project-plugins",
+                "src": "wp-content/plugins/indigotree-site-*",
+                "dest": "wp-content/plugins",
+                "flags": "-azvr --inplace --exclude-from=.deployignore"
+              },
+              {
+                "name": "modules",
+                "src": "wp-content/platform",
+                "dest": "wp-content",
+                "flags": "-azvr --inplace --delete --delete-delay --exclude-from=.deployignore"
+              },
+              {
+                "name": "mu-plugins",
+                "src": "wp-content/mu-plugins",
+                "dest": "wp-content",
+                "flags": "-azvr --inplace --exclude-from=.deployignore"
+              },
+              {
+                "name": "theme-and-rest",
+                "src": ".",
+                "dest": "",
+                "flags": "-azvr --inplace --exclude-from=.deployignore --exclude=/*.* --exclude=_wpeprivate/ --exclude=wp-admin/ --exclude=wp-includes/ --exclude=wp-content/plugins/ --exclude=wp-content/platform/ --exclude=wp-content/mu-plugins/ --exclude=wp-content/uploads/ --exclude=wp-content/upgrade*/ --exclude=wp-content/drop-ins/ --exclude=wp-content/languages/ --exclude=mysql.sql --include=/wp-content/themes/ --include=/wp-content/themes/indigotree-theme-2026/*** --exclude=/wp-content/themes/*"
+              }
+            ]
 ```
-name: Deploy to WP Engine
-on:
-  push:
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v2
-    - name: GitHub Action Deploy to WP Engine
-      uses: wpengine/github-action-wpe-site-deploy@v2.3.5
-      with:
+Minimal single-job example:
 
-      # Deploy vars
-        WPE_SSHG_KEY_PRIVATE: ${{ secrets.WPE_SSHG_KEY_PRIVATE }}
-
-      # Branches & Environments
-        PRD_BRANCH: main
-        PRD_ENV: prodsitehere
+```yaml
+      - uses: actions/checkout@v4
+      - name: Deploy to WP Engine
+        uses: indigotree/github-action-deploy-to-wpe@<pin>
+        with:
+          WPE_SSHG_KEY_PRIVATE: ${{ secrets.WPE_SSHG_KEY_PRIVATE }}
+          PRD_BRANCH: main
+          PRD_ENV: myinstall
+          DEPLOYS: |
+            [
+              {
+                "src": ".",
+                "dest": "",
+                "flags": "-azvr --inplace --exclude-from=.deployignore"
+              }
+            ]
 ```
 
-### Extended main.yml
+## Migration from older action inputs
 
-```
-name: Deploy to WP Engine
-on:
-  push:
+If you previously used several deploy steps with `TPO_SRC_PATH`, `TPO_PATH`, and `FLAGS`:
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v2
-    - name: GitHub Action Deploy to WP Engine
-      uses: wpengine/github-action-wpe-site-deploy@v2.3.5
-      with:
+| Old input        | DEPLOYS field |
+| ---------------- | ------------- |
+| `TPO_SRC_PATH`   | `src`         |
+| `TPO_PATH`       | `dest`        |
+| `FLAGS`          | `flags`       |
 
-      # Deploy vars
-        WPE_SSHG_KEY_PRIVATE: ${{ secrets.WPE_SSHG_KEY_PRIVATE }}
-        PHP_LINT: TRUE
-        FLAGS: -azvr --inplace --delete --exclude=".*" --exclude-from=.deployignore
-        CACHE_CLEAR: TRUE
-        TPO_SRC_PATH: "wp-content/themes/genesis-child-theme/"
-        TPO_PATH: "wp-content/themes/genesis-child-theme/"
+1. Merge each old step into one object in the `DEPLOYS` array (preserve order).
+2. Use a single `uses:` step with `DEPLOYS: |`.
+3. Set `CACHE_CLEAR: FALSE` unless you want a post-deploy flush (default is `false`).
+4. Pin `uses:` to the commit SHA that includes `DEPLOYS` support.
 
-      # Branches & Environments
-        PRD_BRANCH: main
-        PRD_ENV: prodsitehere
+Removed inputs: `TPO_SRC_PATH`, `TPO_PATH`, `FLAGS`, `SCRIPT`.
 
-        STG_BRANCH: feature/stage
-        STG_ENV: stagesitehere
-
-        DEV_BRANCH: feature/dev
-        DEV_ENV: devsitehere
-```
-
-## Environment Variables & Secrets
+## Inputs
 
 ### Required
 
-| Name                   | Type    | Usage                                                                              |
-| ---------------------- | ------- | ---------------------------------------------------------------------------------- |
-| `PRD_BRANCH`           | string  | Insert the name of the GitHub branch you would like to deploy from, example; main. |
-| `PRD_ENV`              | string  | Insert the name of the WP Engine environment you want to deploy to.                |
-| `WPE_SSHG_KEY_PRIVATE` | secrets | Private SSH Key for the SSH Gateway and deployment. See below for SSH key usage.   |
+| Name                   | Type    | Usage |
+| ---------------------- | ------- | ----- |
+| `DEPLOYS`              | string  | JSON array of deploy jobs (inline in workflow YAML). |
+| `PRD_BRANCH`           | string  | Production branch name (exact match to `refs/heads/<name>`). |
+| `PRD_ENV`              | string  | WP Engine production environment name. |
+| `WPE_SSHG_KEY_PRIVATE` | secrets | Base64-encoded private SSH key. |
 
 ### Optional
 
-| Name           | Type   | Usage                                                                                                                                                                                                                                               |
-| -------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `STG_BRANCH`   | string | Insert the name of a staging GitHub branch you would like to deploy from. Note: exclude leading / from branch names.                                                                                                                                |
-| `STG_ENV`      | string | Insert the name of the WP Engine Stage environment you want to deploy to.                                                                                                                                                                           |
-| `DEV_BRANCH`   | string | Insert the name of a development GitHub branch you would like to deploy from. Note: exclude leading / in branch names.                                                                                                                              |
-| `DEV_ENV`      | string | Insert the name of the WP Engine Dev environment you want to deploy to.                                                                                                                                                                             |
-| `PHP_LINT`     | bool   | Set to TRUE to execute a php lint on your branch pre-deployment. Default is `FALSE`.                                                                                                                                                                |
-| `FLAGS`        | string | Set optional rsync flags such as `--delete` or `--exclude-from`. The example is excluding paths specified in a `.deployignore` file in the root of the repo. This action defaults to a non-destructive deploy using the flags in the example above. |
-| `CACHE_CLEAR`  | bool   | Optionally clear cache post deploy. This takes a few seconds. Default is TRUE.                                                                                                                                                                      |
-| `TPO_SRC_PATH` | string | Optional path to specify a theme, plugin, or other directory source to deploy from. Ex. `"wp-content/themes/genesis-child-theme/"` . Defaults to "." Dir.                                                                                           |
-| `TPO_PATH`     | string | Optional path to specify a theme, plugin, or other directory destination to deploy to. Ex. `"wp-content/themes/genesis-child-theme/"` . Defaults to WordPress root directory.                                                                       |
+| Name         | Type   | Usage |
+| ------------ | ------ | ----- |
+| `STG_BRANCH` | string | Staging branch (exact match). Leave placeholder if unused. |
+| `STG_ENV`    | string | WP Engine staging environment. |
+| `DEV_BRANCH` | string | Development branch (exact match). |
+| `DEV_ENV`    | string | WP Engine development environment. |
+| `PHP_LINT`   | bool   | `TRUE` to run `php -l` on each job `src` before deploy. Default `false`. |
+| `CACHE_CLEAR`| bool   | `TRUE` to flush page and CDN cache after all jobs. Default `false`. |
 
-### Further reading
+## Further reading
 
-- [Defining environment variables in GitHub Actions](https://docs.github.com/en/actions/reference/environment-variables)
-- [Storing secrets in GitHub repositories](https://docs.github.com/en/actions/reference/encrypted-secrets)
-- As this script does not restrict files or directories that can be deployed, it is recommended to leverage one of [WP Engine's .gitignore templates.](https://wpengine.com/support/git/#Add_gitignore)
+- [GitHub Actions environment variables](https://docs.github.com/en/actions/reference/environment-variables)
+- [Encrypted secrets](https://docs.github.com/en/actions/reference/encrypted-secrets)
+- [WP Engine .gitignore templates](https://wpengine.com/support/git/#Add_gitignore)
 
-### Legal
+## Legal
 
-See the LICENSE file for license information.
+See LICENSE.
 
 Copyright (C) 2021-present, Indigo Tree Digital Ltd.
 
-This project was based on prior work from https://github.com/wpengine/github-action-wpe-site-deploy
+Based on prior work from https://github.com/wpengine/github-action-wpe-site-deploy  
 Copyright (c) 2021 WP Engine
-
