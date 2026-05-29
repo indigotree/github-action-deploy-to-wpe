@@ -5,7 +5,7 @@ LABEL "com.github.actions.icon"="upload-cloud"
 LABEL "com.github.actions.color"="purple"
 LABEL "repository"="https://github.com/indigotree/github-action-deploy-to-wpe"
 LABEL "maintainer"="Paul Wong-Gibbs <paul.wong-gibbs@indigotree.co.uk>"
-RUN apk add bash php
-ADD entrypoint.sh /entrypoint.sh
-ADD exclude.txt /exclude.txt
+RUN apk add --no-cache bash php jq
+COPY entrypoint.sh /entrypoint.sh
+COPY exclude.txt /exclude.txt
 ENTRYPOINT ["/entrypoint.sh"]

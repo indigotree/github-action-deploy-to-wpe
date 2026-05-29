@@ -2,31 +2,22 @@ name: "Deploy WordPress projects to WP Engine"
 branding:
   icon: "upload-cloud"
   color: "purple"
-description: "Deploy WordPress projects to WP Engine"
+description: "Deploy WordPress to WP Engine via SSH Gateway. Requires DEPLOYS JSON array of rsync jobs."
 inputs:
   WPE_SSHG_KEY_PRIVATE:
     description: "Base64-encoded private RSA key (single line). Encode with: base64 -w 0 < key (Linux) or base64 -i key (macOS)."
+    required: true
+  DEPLOYS:
+    description: "JSON array of deploy jobs (src and flags required; optional name and dest). Inline in workflow YAML."
     required: true
   PHP_LINT:
     description: "optional php syntax check"
     required: false
     default: false
-  FLAGS:
-    description: "Optional flags for the deployment"
-    required: true
-    default: '-azvr --inplace --exclude=".*"'
   CACHE_CLEAR:
-    description: "Optional WPE Clear cache"
+    description: "When true, run WP-CLI page-cache and cdn-cache flush after all rsync jobs"
     required: false
-    default: true
-  TPO_SRC_PATH:
-    description: "An optional source directory to deploy other than the root directory that is being versioned."
-    default: "."
-    required: false
-  TPO_PATH:
-    description: "An optional destination directory to deploy to other than the WordPress root."
-    default: ""
-    required: false
+    default: false
   PRD_BRANCH:
     description: "Source branch to deploy PRD_ENV"
     required: true
@@ -51,9 +42,6 @@ inputs:
     description: "Destination to deploy to WPE Dev"
     required: false
     default: "DEV_ENV_HERE"
-  SCRIPT:
-    description: "File containing custom scripts run after the rsync"
-    required: false
 
 runs:
   using: "docker"
