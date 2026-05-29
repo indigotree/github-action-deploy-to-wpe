@@ -44,9 +44,28 @@ validate_deploys() {
     echo "Validated ${DEPLOY_COUNT} deploy job(s)."
 }
 
+expand_src_paths() {
+    local src=$1
+    local -n out=$2
+
+    if shopt -q nullglob; then
+        out=( $src )
+    else
+        shopt -s nullglob
+        out=( $src )
+        shopt -u nullglob
+    fi
+
+    if (( ${#out[@]} == 0 )); then
+        echo "ERROR: no files matched src: ${src}"
+        exit 1
+    fi
+}
+
 prep_paths_and_lint() {
-    local job src
+    local job src path
     local -A prepped_srcs=()
+    local -a src_paths=()
 
     while IFS= read -r job; do
         src=$(echo "$job" | jq -r '.src')
@@ -55,20 +74,24 @@ prep_paths_and_lint() {
         fi
         prepped_srcs[$src]=1
 
-        if [[ ! -e "$src" ]]; then
-            echo "WARNING: src path does not exist (may be a glob): ${src}"
-        else
-            echo "Prepping file perms for ${src}..."
-            find "$src" -type d -exec chmod 775 {} \;
-            find "$src" -type f -exec chmod 664 {} \;
-        fi
+        expand_src_paths "$src" src_paths
 
-        if [[ "${INPUT_PHP_LINT^^}" == "TRUE" ]]; then
-            echo "PHP lint for ${src}..."
-            while IFS= read -r -d '' file; do
-                php -l "$file"
-            done < <(find "$src" -name "*.php" -print0 2>/dev/null || true)
-        fi
+        for path in "${src_paths[@]}"; do
+            if [[ ! -e "$path" ]]; then
+                echo "ERROR: src path does not exist: ${path} (from ${src})"
+                exit 1
+            fi
+            echo "Prepping file perms for ${path}..."
+            find "$path" -type d -exec chmod 775 {} \;
+            find "$path" -type f -exec chmod 664 {} \;
+
+            if [[ "${INPUT_PHP_LINT^^}" == "TRUE" ]]; then
+                echo "PHP lint for ${path}..."
+                while IFS= read -r -d '' file; do
+                    php -l "$file"
+                done < <(find "$path" -name "*.php" -print0 2>/dev/null || true)
+            fi
+        done
     done < <(echo "$INPUT_DEPLOYS" | jq -c '.[]')
 
     if [[ "${INPUT_PHP_LINT^^}" != "TRUE" ]]; then
@@ -124,6 +147,7 @@ setup_ssh() {
 run_rsync_jobs() {
     local job index=0 total
     local name src dest flags destination
+    local -a src_paths=()
 
     total=$(echo "$INPUT_DEPLOYS" | jq 'length')
 
@@ -141,7 +165,8 @@ run_rsync_jobs() {
             echo "Deploy job ${index}/${total}"
         fi
 
-        rsync --rsh="$RSYNC_RSH" $flags --exclude-from='/exclude.txt' "$src" "$destination"
+        expand_src_paths "$src" src_paths
+        rsync --rsh="$RSYNC_RSH" $flags --exclude-from='/exclude.txt' "${src_paths[@]}" "$destination"
     done < <(echo "$INPUT_DEPLOYS" | jq -c '.[]')
 }
 
